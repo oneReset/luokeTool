@@ -23,10 +23,12 @@ from core.vision import (
 
 # Templates excluded from action detection scoring
 _ACTION_EXCLUDE_KEYS = {
-    "yes.png",             # escape mode click position only
-    "qiudaidai.png",       # teammate reconnect only
-    "capture.png",         # battle type classification only
-    "pollute_capture.png", # battle type classification only
+    "yes.png",              # escape mode click position only
+    "qiudaidai.png",        # teammate reconnect only
+    "capture.png",          # battle type classification only
+    "pollute_capture.png",  # battle type classification only
+    "capture_exhausted.png",# mode 4 exhausted-capture detection only
+    "catching.png",         # mode 4 ball panel detection only
 }
 
 from core.util import _ts

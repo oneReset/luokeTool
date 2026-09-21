@@ -367,6 +367,8 @@ class CruiseController:
 
         # 进入该方向时先旋转（第一个方向不转，保持朝向）
         if elapsed < 0.3:
+
+
             if self._scan_dir_idx > 0:
                 self._turn_by_degrees(SCAN_TURN_DEGREES)
         elif elapsed >= SCAN_TIME_PER_DIRECTION + 0.3:

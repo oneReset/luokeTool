@@ -103,6 +103,36 @@ def _run_cruise_subprocess() -> None:
     cruise_main()
 
 
+def _setup_pet_mode(prefs: dict, choice: str):
+    """模式2/3公共配置：选精灵模型 + 遇敌行为，返回已配置的模式实例。"""
+    model_name = _select_pet_model(prefs)
+    prefs["pet_model_name"] = model_name
+    CONFIG.pet_model_name = model_name
+
+    pollute_action = prefs.get("pet_pollute_action", "escape")
+    normal_action = prefs.get("pet_normal_action", "escape")
+
+    print("\n当前遇敌配置:")
+    print(f"  污染战斗 → {_action_label(pollute_action)}")
+    print(f"  普通战斗 → {_action_label(normal_action)}")
+
+    customize = input("是否修改遇敌配置？(y/N): ").strip().lower()
+    if customize == "y":
+        pollute_action = _prompt_action("污染战斗", pollute_action)
+        normal_action = _prompt_action("普通战斗", normal_action)
+        print(f"\n已应用遇敌配置:")
+        print(f"  污染战斗 → {_action_label(pollute_action)}")
+        print(f"  普通战斗 → {_action_label(normal_action)}")
+
+    prefs["pet_pollute_action"] = pollute_action
+    prefs["pet_normal_action"] = normal_action
+
+    mode_cls = MODE_REGISTRY[choice]
+    mode = mode_cls()
+    mode.set_battle_actions(pollute_action=pollute_action, normal_action=normal_action)
+    return mode
+
+
 def main() -> None:
     if "--cruise" in sys.argv:
         _run_cruise_subprocess()
@@ -124,58 +154,14 @@ def main() -> None:
     choices = "/".join(sorted(MODE_REGISTRY.keys()))
     choice = input(f"请输入选项 ({choices}): ").strip()
 
-    if choice == "2":
-        model_name = _select_pet_model(prefs)
-        prefs["pet_model_name"] = model_name
-        CONFIG.pet_model_name = model_name
-
-        pollute_action = prefs.get("pet_pollute_action", "escape")
-        normal_action = prefs.get("pet_normal_action", "escape")
-
-        print("\n当前遇敌配置:")
-        print(f"  污染战斗 → {_action_label(pollute_action)}")
-        print(f"  普通战斗 → {_action_label(normal_action)}")
-
-        customize = input("是否修改遇敌配置？(y/N): ").strip().lower()
-        if customize == "y":
-            pollute_action = _prompt_action("污染战斗", pollute_action)
-            normal_action = _prompt_action("普通战斗", normal_action)
-            print(f"\n已应用遇敌配置:")
-            print(f"  污染战斗 → {_action_label(pollute_action)}")
-            print(f"  普通战斗 → {_action_label(normal_action)}")
-
-        prefs["pet_pollute_action"] = pollute_action
-        prefs["pet_normal_action"] = normal_action
-
+    if choice in ("2", "3"):
+        mode = _setup_pet_mode(prefs, choice)
+    elif choice == "4":
+        from modes.auto_battle import describe_config
+        print(f"\n[模式4 配置] {describe_config()}")
+        print("[提示] 修改配置请编辑 battle_config.py 后重启生效")
         mode_cls = MODE_REGISTRY[choice]
         mode = mode_cls()
-        mode.set_battle_actions(pollute_action=pollute_action, normal_action=normal_action)
-    elif choice == "3":
-        model_name = _select_pet_model(prefs)
-        prefs["pet_model_name"] = model_name
-        CONFIG.pet_model_name = model_name
-
-        pollute_action = prefs.get("pet_pollute_action", "escape")
-        normal_action = prefs.get("pet_normal_action", "escape")
-
-        print("\n当前遇敌配置:")
-        print(f"  污染战斗 → {_action_label(pollute_action)}")
-        print(f"  普通战斗 → {_action_label(normal_action)}")
-
-        customize = input("是否修改遇敌配置？(y/N): ").strip().lower()
-        if customize == "y":
-            pollute_action = _prompt_action("污染战斗", pollute_action)
-            normal_action = _prompt_action("普通战斗", normal_action)
-            print(f"\n已应用遇敌配置:")
-            print(f"  污染战斗 → {_action_label(pollute_action)}")
-            print(f"  普通战斗 → {_action_label(normal_action)}")
-
-        prefs["pet_pollute_action"] = pollute_action
-        prefs["pet_normal_action"] = normal_action
-
-        mode_cls = MODE_REGISTRY[choice]
-        mode = mode_cls()
-        mode.set_battle_actions(pollute_action=pollute_action, normal_action=normal_action)
     else:
         mode_cls = MODE_REGISTRY.get(choice, MODE_REGISTRY["1"])
         mode = mode_cls()

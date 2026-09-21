@@ -6,16 +6,16 @@ import random
 import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 import interception
 import win32con
 import win32gui
 
 from config import CONFIG
+from core.battle_actions import do_escape
 from core.capture import capture_window_bgr
 from core.input import _ensure_interception, click_at, press_once
-from core.vision import best_yes_score_and_loc
 from core.pet_detector import PetDetector
 from core.util import _ts
 from modes.ball import AutoBallMode
@@ -175,6 +175,9 @@ class AutoBallPetMode(AutoBallMode):
         self._scan_count: int = 0
         self._last_scan_log_time: float = 0.0
         self._no_detect_count: int = 0
+        # 目标锁状态
+        self._ref_center: Optional[Tuple[int, int]] = None  # 参考点（上一帧选中目标中心）
+        self._lock_lost: int = 0                             # 锁定目标连续丢失帧数
         # 标定状态
         self._calib_attempted: bool = False
 
@@ -191,6 +194,46 @@ class AutoBallPetMode(AutoBallMode):
             self._detector = PetDetector()
             self._detector.preload()
         return self._detector
+
+    def _select_target(self, detections: list, frame_w: int, frame_h: int) -> Optional[Tuple[int, int, int, int, float]]:
+        """距离最近优先选目标（conf 仅在距离打平时决胜），并用位置连续性锁定。
+
+        参考点为上一帧选中目标的中心（冷启动用屏幕中心）：
+        - 锁定目标须落在匹配半径内才算同一目标，否则计丢失；
+        - 连续丢失超过容忍帧数后释放锁，以旧参考点重选（仍选最近的）。
+        """
+        if not detections:
+            self._lock_lost += 1
+            if self._lock_lost >= CONFIG.pet_lock_lost_frames:
+                self._ref_center = None
+                self._lock_lost = 0
+            return None
+
+        cx0, cy0 = self._ref_center if self._ref_center is not None else (frame_w // 2, frame_h // 2)
+
+        best = None
+        best_key = None
+        best_dist = 0.0
+        for cx, cy, w, h, conf in detections:
+            dist = ((cx - cx0) ** 2 + (cy - cy0) ** 2) ** 0.5
+            key = (dist, -conf)
+            if best_key is None or key < best_key:
+                best = (cx, cy, w, h, conf)
+                best_key = key
+                best_dist = dist
+
+        if self._ref_center is not None:
+            radius = max(best[2], best[3]) * CONFIG.pet_lock_dist_ratio + CONFIG.pet_lock_dist_base
+            if best_dist > radius:
+                self._lock_lost += 1
+                if self._lock_lost < CONFIG.pet_lock_lost_frames:
+                    return None  # 锁定目标短暂丢失，本帧视为无目标
+                self._lock_lost = 0  # 丢失超限，释放锁并接受当前最近目标
+            else:
+                self._lock_lost = 0
+
+        self._ref_center = (best[0], best[1])
+        return best
 
     def _detect_and_throw(self, hwnd: int) -> bool:
         """单轮精灵检测+瞄准+丢球。返回 True 表示检测到精灵并执行了丢球。"""
@@ -220,7 +263,9 @@ class AutoBallPetMode(AutoBallMode):
             print(f"[{_ts()}] [错误] 检测异常: {e}")
             return False
 
-        if not detections:
+        fh, fw = frame.shape[:2]
+        target = self._select_target(detections, fw, fh)
+        if target is None:
             self._no_detect_count += 1
             if now - self._last_detect_time > 0.2:
                 _overlay.hide()
@@ -238,11 +283,9 @@ class AutoBallPetMode(AutoBallMode):
         # 检测到精灵，重置计数
         self._no_detect_count = 0
         self._last_find_time = now
-
-        fh, fw = frame.shape[:2]
         self._last_detect_time = time.time()
 
-        pet_cx, pet_cy, pet_w, pet_h, conf = detections[0]
+        pet_cx, pet_cy, pet_w, pet_h, conf = target
         print(f"[{_ts()}] ✓ 检测到精灵: conf={conf:.2f} pos=({pet_cx},{pet_cy}) size=({pet_w}x{pet_h})  共{len(detections)}个目标")
 
         if self._overlay_hide_timer is None or not self._overlay_hide_timer.is_alive():
@@ -367,10 +410,10 @@ class AutoBallPetMode(AutoBallMode):
             return 0.0
         fh, fw = frame.shape[:2]
 
-        dets = detector.detect(frame)
-        if not dets:
+        target = self._select_target(detector.detect(frame), fw, fh)
+        if target is None:
             return 0.0
-        cx1, cy1 = dets[0][0], dets[0][1]
+        cx1, cy1 = target[0], target[1]
 
         # 精灵太靠边时标定不可靠（移动后可能出屏）
         margin = fw * 0.2
@@ -385,11 +428,12 @@ class AutoBallPetMode(AutoBallMode):
         frame2 = capture_window_bgr(hwnd)
         if frame2 is None or frame2.size == 0:
             return 0.0
-        dets2 = detector.detect(frame2)
-        if not dets2:
+        fh2, fw2 = frame2.shape[:2]
+        target2 = self._select_target(detector.detect(frame2), fw2, fh2)
+        if target2 is None:
             print(f"[{_ts()}] 标定失败：移动后未检测到精灵")
             return 0.0
-        cx2, cy2 = dets2[0][0], dets2[0][1]
+        cx2, cy2 = target2[0], target2[1]
 
         pixel_shift = abs(cx1 - cx2)
         if pixel_shift < 10:
@@ -501,10 +545,11 @@ class AutoBallPetMode(AutoBallMode):
                 new_frame = capture_window_bgr(hwnd)
                 if new_frame is None or new_frame.size == 0:
                     break
-                dets = detector.detect(new_frame)
-                if not dets:
+                nf_h, nf_w = new_frame.shape[:2]
+                target = self._select_target(detector.detect(new_frame), nf_w, nf_h)
+                if target is None:
                     break
-                pet_cx, pet_cy = dets[0][0], dets[0][1]
+                pet_cx, pet_cy = target[0], target[1]
 
             final_h_err = pet_cx - center_x
             final_v_err = pet_cy - center_y
@@ -603,10 +648,11 @@ class AutoBallPetMode(AutoBallMode):
                 frame = capture_window_bgr(hwnd)
                 if frame is None or frame.size == 0:
                     break
-                dets = detector.detect(frame)
-                if not dets:
+                cf_h, cf_w = frame.shape[:2]
+                target = self._select_target(detector.detect(frame), cf_w, cf_h)
+                if target is None:
                     break
-                pet_cx, pet_cy = dets[0][0], dets[0][1]
+                pet_cx, pet_cy = target[0], target[1]
 
             print(f"  MLP: h_err={int(pet_cx - cx):+d}px v_err={int(pet_cy - cy):+d}px "
                   f"(w_h=[{nn_w[0]:.4f},{nn_w[1]:.6f},{nn_w[2]:.8f}])")
@@ -657,6 +703,9 @@ class AutoBallPetMode(AutoBallMode):
 
     def on_battle_start(self, event: BattleEvent) -> None:
         _overlay.hide()
+        # 进战斗后旧目标作废，清目标锁
+        self._ref_center = None
+        self._lock_lost = 0
         is_pollute = event.pollute_capture_score > event.capture_score
         self._current_action = (
             self._pollute_action if is_pollute else self._normal_action
@@ -682,7 +731,7 @@ class AutoBallPetMode(AutoBallMode):
             print(f"[{_ts()}] 战斗动作: 已触发按键 {CONFIG.press_key}（本场=聚能）")
             return None
         elif self._current_action == "escape":
-            return self._do_escape(event)
+            return do_escape(event.hwnd, event.templates, event.scale, event.window_width, event.window_height)
         elif self._current_action == "skill1_gather":
             if not self._skill1_used:
                 press_once(event.hwnd, "1")
@@ -694,35 +743,6 @@ class AutoBallPetMode(AutoBallMode):
                 print(f"[{_ts()}] 战斗动作: 已触发按键 {CONFIG.press_key}（本场=技能1+聚能）")
                 return None
         return None
-
-    def _do_escape(self, event: BattleEvent) -> float:
-        press_once(event.hwnd, "esc")
-        print(f"[{_ts()}] 战斗动作: 已触发 ESC（本场=逃跑）")
-
-        yes_threshold = CONFIG.match_threshold * 0.8
-        for _ in range(10):
-            time.sleep(0.3)
-            full_shot = capture_window_bgr(event.hwnd)
-            best_score, best_loc = best_yes_score_and_loc(full_shot, event.templates, event.scale)
-
-            if best_score >= yes_threshold:
-                cap_h, cap_w = full_shot.shape[:2]
-                click_x, click_y = best_loc
-                if cap_w > 0 and cap_h > 0 and (cap_w != event.window_width or cap_h != event.window_height):
-                    click_x = int(round(best_loc[0] * event.window_width / cap_w))
-                    click_y = int(round(best_loc[1] * event.window_height / cap_h))
-                    click_x = max(0, min(event.window_width - 1, click_x))
-                    click_y = max(0, min(event.window_height - 1, click_y))
-
-                if click_at(event.hwnd, click_x, click_y):
-                    print(f"[{_ts()}] 逃跑确认点击成功")
-                    time.sleep(0.5)
-                    click_at(event.hwnd, click_x, click_y)
-                    break
-        else:
-            print(f"[{_ts()}] [警告] 触发 ESC 后未找到确认按钮 yes.png")
-
-        return 2.0
 
     def on_battle_end(self, event: BattleEvent) -> None:
         self._current_action = None

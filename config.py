@@ -113,6 +113,10 @@ class AppConfig:
     pet_aim_pixels_per_unit: float = 0.0
     pet_aim_calibrate: bool = True             # Auto-calibrate when pet_aim_pixels_per_unit == 0.
     pet_aim_calib_step: int = 200              # Mouse driver units for calibration move.
+    # Target lock: 距离最近优先（conf 仅过滤与打平决胜），位置连续性锁定防多目标抖动.
+    pet_lock_lost_frames: int = 3              # 锁定目标连续丢失 N 帧后释放目标锁
+    pet_lock_dist_ratio: float = 1.5           # 锁定匹配半径 = max(w,h) × ratio
+    pet_lock_dist_base: int = 40               # 锁定匹配半径基数 (px)
     # Runtime controls.
     pause_hotkey: str = "f8"  # Hotkey to pause/resume the engine loop (keyboard library format)
 
